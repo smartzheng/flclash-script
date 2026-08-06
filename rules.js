@@ -1,3 +1,4 @@
+// 远程脚本地址：https://raw.githubusercontent.com/smartzheng/flclash-script/refs/heads/main/rules.js
 function main(config) {
   var groupName = "ChatGPT";
   var fallbackGroupName = "ChatGPT-故障转移";
@@ -21,11 +22,26 @@ function main(config) {
     return result;
   }
 
-  function nodePriority(name) {
+  function isTcpFriendlyProxy(proxy) {
+    var type = String((proxy && proxy.type) || "").toLowerCase();
+    return !/^(hysteria|hysteria2|tuic|wireguard)$/.test(type);
+  }
+
+  function nodePriority(proxy, name) {
     var score = 1000;
 
+    if (proxy && (proxy["reality-opts"] || proxy.flow === "xtls-rprx-vision")) {
+      score -= 350;
+    } else if (proxy && !proxy.network) {
+      score -= 250;
+    } else if (proxy && /^(tcp|ws|grpc|http)$/i.test(proxy.network || "")) {
+      score -= 150;
+    }
+    if (proxy && Number(proxy.port) === 443) {
+      score -= 80;
+    }
     if (/专线|專線|住宅|家宽|家寬|流媒体|流媒體/i.test(name)) {
-      score -= 500;
+      score -= 40;
     }
     if (/日本|東京|东京|Japan|\bJP\b/i.test(name)) {
       score -= 300;
@@ -48,13 +64,19 @@ function main(config) {
     var candidates = [];
 
     for (var i = 0; i < proxies.length; i++) {
-      var name = proxies[i] && proxies[i].name;
+      var proxy = proxies[i];
+      var name = proxy && proxy.name;
       if (
         typeof name === "string" &&
+        isTcpFriendlyProxy(proxy) &&
         regionPattern.test(name) &&
         !excludedNodePattern.test(name)
       ) {
-        candidates.push({ name: name, index: i, score: nodePriority(name) });
+        candidates.push({
+          name: name,
+          index: i,
+          score: nodePriority(proxy, name)
+        });
       }
     }
 
@@ -145,6 +167,8 @@ function main(config) {
         "(?i)(台湾|台灣|Taiwan|TW|日本|東京|东京|Japan|JP|新加坡|Singapore|SG|美国|美國|United.?States|US)";
       fallbackGroup["exclude-filter"] =
         "(?i)(香港|Hong.?Kong|HK|澳门|澳門|Macau|MO|剩余|剩餘|流量|套餐|到期|过期|過期|有效期|重置|expire|expired|traffic|quota|官网|官網|官方|测试|測試|test|测速|測速|直连|直連)";
+      fallbackGroup["exclude-type"] =
+        "(?i)(Hysteria|Hysteria2|TUIC|WireGuard)";
     }
 
     var selectable = [];

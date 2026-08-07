@@ -282,6 +282,8 @@ function main(config) {
   }
 
   function buildRules() {
+    // 进程规则必须排在域名和订阅规则之前，覆盖客户端的遥测、推送等非 OpenAI 域名请求。
+    var appProcessNames = ["chatgpt.exe", "codex.exe"];
     var privateRules = [
       "DOMAIN-SUFFIX,lan,DIRECT",
       "DOMAIN-SUFFIX,local,DIRECT",
@@ -335,6 +337,9 @@ function main(config) {
       var privateParts = privateRules[i].split(",");
       managedPrivateKeys[(privateParts[0] + "," + privateParts[1]).toLowerCase()] = true;
     }
+    for (var appIndex = 0; appIndex < appProcessNames.length; appIndex++) {
+      addRule("PROCESS-NAME," + appProcessNames[appIndex] + "," + groupName);
+    }
     for (var j = 0; j < suffixes.length; j++) {
       addRule("DOMAIN-SUFFIX," + suffixes[j] + "," + groupName);
     }
@@ -361,10 +366,14 @@ function main(config) {
         (type.indexOf("DOMAIN") === 0 &&
           (/openai|chatgpt|oaistatic|oaiusercontent|oaistatsig/.test(value))) ||
         (type === "DOMAIN-KEYWORD" && /openai|chatgpt/.test(value));
+      var isManagedAppProcessRule =
+        type === "PROCESS-NAME" &&
+        appProcessNames.indexOf(parts[1].trim().toLowerCase()) !== -1;
 
       if (
         isOldManagedTarget ||
         isOldOpenAiRule ||
+        isManagedAppProcessRule ||
         managedPrivateKeys[pairKey]
       ) {
         continue;

@@ -151,11 +151,12 @@ function main(config) {
       name: fallbackGroupName,
       type: "fallback",
       url: healthCheckUrl,
-      interval: 600,
-      timeout: 8000,
-      lazy: true,
+      interval: 300,
+      timeout: 6000,
+      lazy: false,
       "max-failed-times": 2,
       "expected-status": 200,
+      "disable-udp": true,
       hidden: false
     };
 
@@ -172,20 +173,19 @@ function main(config) {
     }
 
     var selectable = [];
+    // 默认交给故障转移组，避免 store-selected 将 ChatGPT 长期锁死在失效节点。
+    selectable.push(fallbackGroupName);
     if (candidates.length > 0) {
-      selectable.push(candidates[0]);
-      selectable.push(fallbackGroupName);
-      for (var j = 1; j < candidates.length; j++) {
+      for (var j = 0; j < candidates.length; j++) {
         selectable.push(candidates[j]);
       }
-    } else {
-      selectable.push(fallbackGroupName);
     }
 
     newGroups.push(fallbackGroup);
     newGroups.push({
       name: groupName,
       type: "select",
+      "disable-udp": true,
       proxies: selectable
     });
 

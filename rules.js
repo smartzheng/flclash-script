@@ -3,6 +3,8 @@ function main(config) {
   var groupName = "ChatGPT";
   var fallbackGroupName = "ChatGPT-故障转移";
   var healthCheckUrl = "https://chatgpt.com/cdn-cgi/trace";
+  // 公司内网域名必须绕过代理，并交给 Windows/公司 DNS 解析。
+  var directDomainSuffixes = ["xwfintech.com"];
 
   var regionPattern = /台湾|台灣|Taiwan|\bTW\b|日本|東京|东京|Japan|\bJP\b|新加坡|Singapore|\bSG\b|美国|美國|United States|\bUS\b/i;
   var excludedNodePattern = /香港|Hong.?Kong|\bHK\b|澳门|澳門|Macau|\bMO\b|剩余|剩餘|流量|套餐|到期|过期|過期|有效期|重置|expire|expired|traffic|quota|官网|官網|官方|测试|測試|test|测速|測速|直连|直連/i;
@@ -229,7 +231,11 @@ function main(config) {
     };
     config.sniffer["skip-domain"] = mergeUnique(
       config.sniffer["skip-domain"],
-      ["+.lan", "+.local"]
+      ["+.lan", "+.local"].concat(
+        directDomainSuffixes.map(function (domain) {
+          return "+." + domain;
+        })
+      )
     );
   }
 
@@ -260,10 +266,15 @@ function main(config) {
     dns.nameserver = domesticDns;
     dns.fallback = overseasDns;
     dns["proxy-server-nameserver"] = domesticDns;
+    dns["direct-nameserver"] = ["system"];
     dns["fake-ip-filter"] = mergeUnique(dns["fake-ip-filter"], [
       "+.lan",
       "+.local"
-    ]);
+    ].concat(
+      directDomainSuffixes.map(function (domain) {
+        return "+." + domain;
+      })
+    ));
 
     dns["fallback-filter"] = dns["fallback-filter"] || {};
     dns["fallback-filter"].geoip = true;
@@ -277,6 +288,9 @@ function main(config) {
     for (var i = 0; i < openAiDomains.length; i++) {
       dns["nameserver-policy"][openAiDomains[i]] = overseasDns.slice();
     }
+    for (var directIndex = 0; directIndex < directDomainSuffixes.length; directIndex++) {
+      dns["nameserver-policy"]["+." + directDomainSuffixes[directIndex]] = ["system"];
+    }
 
     config.dns = dns;
   }
@@ -285,6 +299,7 @@ function main(config) {
     // 进程规则必须排在域名和订阅规则之前，覆盖客户端的遥测、推送等非 OpenAI 域名请求。
     var appProcessNames = ["chatgpt.exe", "codex.exe"];
     var privateRules = [
+      "DOMAIN-SUFFIX,xwfintech.com,DIRECT",
       "DOMAIN-SUFFIX,lan,DIRECT",
       "DOMAIN-SUFFIX,local,DIRECT",
       "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",

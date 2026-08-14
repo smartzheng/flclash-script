@@ -2,7 +2,8 @@
 function main(config) {
   var groupName = "ChatGPT";
   var fallbackGroupName = "ChatGPT-故障转移";
-  var healthCheckUrl = "https://chatgpt.com/cdn-cgi/trace";
+  var healthCheckUrl = "https://api.openai.com/v1/models";
+  var healthCheckExpectedStatus = 401;
   // 公司内网域名必须绕过代理，并交给 Windows/公司 DNS 解析。
   var directDomainSuffixes = ["xwfintech.com"];
 
@@ -157,7 +158,7 @@ function main(config) {
       timeout: 6000,
       lazy: false,
       "max-failed-times": 2,
-      "expected-status": 200,
+      "expected-status": healthCheckExpectedStatus,
       "disable-udp": true,
       hidden: false
     };
@@ -266,7 +267,8 @@ function main(config) {
     dns.nameserver = domesticDns;
     dns.fallback = overseasDns;
     dns["proxy-server-nameserver"] = domesticDns;
-    dns["direct-nameserver"] = ["system"];
+    dns["direct-nameserver"] = domesticDns.slice();
+    dns["direct-nameserver-follow-policy"] = true;
     dns["fake-ip-filter"] = mergeUnique(dns["fake-ip-filter"], [
       "+.lan",
       "+.local"

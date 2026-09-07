@@ -35,7 +35,11 @@ function main(config) {
     "intercom.io",
     "intercomcdn.com"
   ];
+  // 登录或风控校验可能在主聊天链路之外发起；与 ChatGPT 保持同一出口，
+  // 避免 Cloudflare / Arkose 将验证状态判定为跨地区或跨 IP。
   var openAiExactDomains = [
+    "challenges.cloudflare.com",
+    "client-api.arkoselabs.com",
     "cdn.openaimerge.com",
     "ct.sendgrid.net",
     "cdn.workos.com",
@@ -320,7 +324,9 @@ function main(config) {
       "+.workos.com",
       "+.workoscdn.com",
       "+.intercom.io",
-      "+.intercomcdn.com"
+      "+.intercomcdn.com",
+      "challenges.cloudflare.com",
+      "client-api.arkoselabs.com"
     ];
 
     dns.enable = true;

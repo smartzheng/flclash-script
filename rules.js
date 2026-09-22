@@ -1,26 +1,101 @@
 // 远程脚本地址：https://raw.githubusercontent.com/smartzheng/flclash-script/refs/heads/main/rules.js
+// GPT 支持地区来源：https://help.openai.com/en/articles/7947663
 // FLClash / Mihomo 覆写脚本
 // 目标：让 ChatGPT、Codex 及其登录/附件请求保持同一代理组，减少出口漂移、DNS 误解析和流式连接重建。
 // 说明：脚本不会主动开启 TUN，也不会强制开启嗅探；这两项保留 FLClash 当前设置，避免影响 Git、公司内网和其他应用。
 function main(config) {
   config = config || {};
 
+  // ChatGPT 是手动选择入口；真正给 GPT/Codex 流量使用的是 fallback 组。
+  // 这样节点故障时会自动切换，健康时又不会因为 url-test 的小幅延迟波动频繁换出口。
   var groupName = "ChatGPT";
   var fallbackGroupName = "ChatGPT-故障转移";
+  var routeGroupName = fallbackGroupName;
   // 未携带 API Key 的 401 是预期结果，只用来确认 OpenAI 链路可达。
   var healthCheckUrl = "https://api.openai.com/v1/models";
   var healthCheckExpectedStatus = 401;
+  // 0 表示保留全部符合地区和传输条件的节点；如果订阅节点非常多，可改成 20/30。
+  var maxGptNodes = 0;
 
   // 公司内网必须直连，由 Windows/公司 DNS 解析。
   var directDomainSuffixes = ["xwfintech.com"];
 
-  // 只把明确的境外节点放入 ChatGPT 组，避免把中国大陆、香港、澳门或订阅信息误当成节点。
-  var overseasRegionPattern =
-    /台湾|台灣|Taiwan|\bTW\b|日本|東京|东京|Japan|\bJP\b|韩国|韓國|Korea|\bKR\b|新加坡|Singapore|\bSG\b|美国|美國|United.?States|\bUS\b|加拿大|Canada|\bCA\b|英国|英國|United.?Kingdom|\bUK\b|\bGB\b|德国|Germany|\bDE\b|法国|France|\bFR\b|荷兰|荷蘭|Netherlands|\bNL\b|澳大利亚|澳洲|Australia|\bAU\b|印度|India|\bIN\b|土耳其|Turkey|越南|Vietnam|泰国|泰國|Thailand|菲律宾|Philippines|马来西亚|Malaysia|印尼|Indonesia|瑞士|Switzerland|奥地利|Austria|俄罗斯|Russia|芬兰|Finland|瑞典|Sweden|丹麦|Denmark|挪威|Norway|西班牙|Spain|意大利|Italy|巴西|Brazil|墨西哥|Mexico|新西兰|New.?Zealand|波兰|Poland|捷克|Czech|爱尔兰|Ireland|以色列|Israel|南非|South.?Africa|阿联酋|UAE/i;
+  // OpenAI 的官方支持列表覆盖很多国家/地区。节点订阅通常只写两位国家码、
+  // 英文国家名或国旗，因此三种写法都纳入；中国大陆、香港、澳门、俄罗斯等
+  // 不在当前列表中的地区由 excludedNodePattern 明确排除。
+  //
+  // 这是“按节点名筛选”，不是对出口 IP 做地理定位。若节点名不含地区信息，
+  // 它不会被猜测放入 GPT 组，以免把未知出口带进故障转移链路。
+  var gptSupportedRegionCodes = [
+    "AF", "AL", "DZ", "AX", "AD", "AO", "AG", "AR", "AM", "AW", "AU", "AT", "AZ", "BS", "BH",
+    "BD", "BB", "BE", "BZ", "BM", "BJ", "BT", "BO", "BA", "BW", "BR", "BN", "BG",
+    "BF", "BI", "CV", "KH", "CM", "CA", "KY", "CF", "TD", "CL", "CO", "KM", "CG", "CD", "CR",
+    "CI", "HR", "CY", "CZ", "DK", "DJ", "DM", "DO", "EC", "EG", "SV", "GQ",
+    "ER", "EE", "SZ", "ET", "FO", "FJ", "FI", "FR", "GF", "PF", "TF", "GA", "GM", "GE", "DE", "GH",
+    "GR", "GD", "GL", "GT", "GN", "GW", "GY", "HT", "VA", "HN", "HU", "IS",
+    "IN", "ID", "IQ", "IE", "IL", "IT", "JM", "JP", "JO", "KZ", "KE", "KI",
+    "KW", "KG", "LA", "LV", "LB", "LS", "LR", "LY", "LI", "LT", "LU", "MG",
+    "MW", "MY", "MV", "ML", "MT", "MH", "MQ", "MR", "MU", "YT", "MX", "FM", "MD",
+    "MC", "MN", "ME", "MA", "MZ", "MM", "NA", "NR", "NP", "NL", "NC", "NZ", "NI",
+    "NE", "NG", "MK", "NO", "OM", "PK", "PW", "PS", "PA", "PG", "PY", "PE",
+    "PH", "PL", "PT", "QA", "RO", "RW", "KN", "LC", "VC", "WS", "SM", "ST",
+    "SA", "SN", "RS", "SC", "SL", "SG", "SK", "SI", "SB", "SO", "ZA", "KR",
+    "ES", "LK", "SR", "SE", "CH", "TJ", "TZ", "TW", "TH", "TL", "TG", "TO",
+    "TT", "TN", "TR", "TM", "TV", "UG", "UA", "AE", "GB", "US", "UY", "UZ",
+    "VU", "VN", "YE", "ZM", "ZW"
+  ];
+  var gptSupportedRegionAliases = [
+    "台湾", "台灣", "Taiwan", "日本", "东京", "東京", "Japan", "韩国", "韓國", "South Korea",
+    "新加坡", "Singapore", "美国", "美國", "United States", "USA", "加拿大", "Canada",
+    "英国", "英國", "United Kingdom", "德国", "Germany", "法国", "France", "荷兰", "荷蘭",
+    "Netherlands", "澳大利亚", "澳洲", "Australia", "新西兰", "New Zealand", "印度", "India",
+    "印度尼西亚", "印尼", "Indonesia", "马来西亚", "Malaysia", "泰国", "泰國", "Thailand",
+    "越南", "Vietnam", "菲律宾", "Philippines", "柬埔寨", "Cambodia", "老挝", "Laos",
+    "以色列", "Israel", "土耳其", "Turkey", "阿联酋", "UAE", "沙特", "Saudi Arabia",
+    "瑞士", "Switzerland", "奥地利", "Austria", "比利时", "Belgium", "爱尔兰", "Ireland",
+    "意大利", "Italy", "西班牙", "Spain", "葡萄牙", "Portugal", "波兰", "Poland", "捷克",
+    "Czechia", "Czech", "芬兰", "Finland", "瑞典", "Sweden", "丹麦", "Denmark", "挪威",
+    "Norway", "巴西", "Brazil", "墨西哥", "Mexico", "南非", "South Africa", "乌克兰",
+    "Ukraine", "哈萨克斯坦", "Kazakhstan", "蒙古", "Mongolia", "罗马尼亚", "Romania",
+    "保加利亚", "Bulgaria", "克罗地亚", "Croatia", "希腊", "Greece", "冰岛", "Iceland",
+    "塞尔维亚", "Serbia", "斯洛伐克", "Slovakia", "斯洛文尼亚", "Slovenia", "马耳他", "Malta",
+    "卢森堡", "Luxembourg", "爱沙尼亚", "Estonia", "拉脱维亚", "Latvia", "立陶宛", "Lithuania",
+    "阿尔巴尼亚", "Albania", "格鲁吉亚", "Georgia", "亚美尼亚", "Armenia", "阿塞拜疆", "Azerbaijan",
+    "巴林", "Bahrain", "科威特", "Kuwait", "阿曼", "Oman", "卡塔尔", "Qatar", "约旦", "Jordan",
+    "埃及", "Egypt", "摩洛哥", "Morocco", "尼日利亚", "Nigeria", "肯尼亚", "Kenya", "加纳", "Ghana"
+  ];
+  var gptSupportedRegionFlags = [
+    "🇯🇵", "🇹🇼", "🇰🇷", "🇸🇬", "🇺🇸", "🇨🇦", "🇬🇧", "🇩🇪", "🇫🇷", "🇳🇱", "🇦🇺", "🇳🇿",
+    "🇮🇳", "🇮🇩", "🇲🇾", "🇹🇭", "🇻🇳", "🇵🇭", "🇮🇱", "🇹🇷", "🇦🇪", "🇸🇦", "🇮🇹", "🇪🇸",
+    "🇵🇹", "🇨🇭", "🇦🇹", "🇧🇪", "🇮🇪", "🇸🇪", "🇳🇴", "🇩🇰", "🇫🇮", "🇵🇱", "🇨🇿", "🇧🇷",
+    "🇲🇽", "🇿🇦", "🇺🇦", "🇷🇴", "🇬🇷", "🇭🇺", "🇮🇸", "🇦🇷", "🇨🇱", "🇨🇴"
+  ];
   var excludedNodePattern =
-    /香港|Hong.?Kong|\bHK\b|澳门|澳門|Macau|\bMO\b|中国|大陆|大陸|China|\bCN\b|剩余|剩餘|流量|套餐|到期|过期|過期|有效期|重置|expire|expired|traffic|quota|官网|官網|官方|订阅|訂閱|subscription|测试|測試|(?:^|[\s_-])test(?:$|[\s_-])|测速|測速|直连|直連|DIRECT|REJECT/i;
+    /香港|Hong.?Kong|\bHK\b|🇭🇰|澳门|澳門|Macau|\bMO\b|🇲🇴|中国|大陆|大陸|China|\bCN\b|🇨🇳|俄罗斯|俄羅斯|Russia|\bRU\b|🇷🇺|白俄罗斯|Belarus|\bBY\b|剩余|剩餘|流量|套餐|到期|过期|過期|有效期|重置|expire|expired|traffic|quota|官网|官網|官方|订阅|訂閱|subscription|测试|測試|(?:^|[\s_-])test(?:$|[\s_-])|测速|測速|直连|直連|DIRECT|REJECT/i;
   var metadataNodePattern =
     /剩余|剩餘|流量|套餐|到期|过期|過期|有效期|重置|expire|expired|traffic|quota|官网|官網|官方|订阅|訂閱|subscription|测试|測試|(?:^|[\s_-])test(?:$|[\s_-])|测速|測速|直连|直連/i;
+
+  function escapeRegex(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function makeRegionPattern() {
+    var aliases = gptSupportedRegionAliases.concat(gptSupportedRegionFlags);
+    var aliasSource = aliases.map(escapeRegex).join("|");
+    // 国家码必须位于非英文字母边界，避免把 IE 命中 IEPL、把 IN 命中 SINGAPORE。
+    var codeSource = gptSupportedRegionCodes
+      .map(function (code) {
+        return "(^|[^A-Za-z])" + escapeRegex(code) + "(?=$|[^A-Za-z])";
+      })
+      .join("|");
+    return new RegExp(aliasSource + "|" + codeSource, "i");
+  }
+
+  var gptSupportedRegionPattern = makeRegionPattern();
+  // Mihomo 的 include-all/filter 使用 RE2，不能使用 JS 的 lookahead；这里使用
+  // 常见地区名称/码作为无 lookahead 的兜底筛选，正常情况下仍优先使用静态节点名。
+  var gptRegionFilterPattern =
+    "(?i)(台湾|台灣|Taiwan|JP|Japan|日本|东京|東京|TW|KR|South Korea|韩国|韓國|SG|Singapore|新加坡|US|USA|United States|美国|美國|CA|Canada|加拿大|GB|UK|United Kingdom|英国|英國|DE|Germany|德国|FR|France|法国|NL|Netherlands|荷兰|荷蘭|AU|Australia|澳大利亚|澳洲|NZ|New Zealand|新西兰|IN|India|印度|MY|Malaysia|马来西亚|TH|Thailand|泰国|泰國|VN|Vietnam|越南|PH|Philippines|菲律宾|IL|Israel|以色列|TR|Turkey|土耳其|AE|UAE|阿联酋|BR|Brazil|巴西|MX|Mexico|墨西哥|ZA|South Africa|南非|IT|Italy|意大利|ES|Spain|西班牙|PT|Portugal|葡萄牙|CH|Switzerland|瑞士|AT|Austria|奥地利|BE|Belgium|比利时|IE|Ireland|爱尔兰|SE|Sweden|瑞典|NO|Norway|挪威|DK|Denmark|丹麦|FI|Finland|芬兰|PL|Poland|波兰|CZ|Czech|捷克|RO|Romania|罗马尼亚|UA|Ukraine|乌克兰|🇯🇵|🇹🇼|🇰🇷|🇸🇬|🇺🇸|🇨🇦|🇬🇧|🇩🇪|🇫🇷|🇳🇱|🇦🇺|🇳🇿|🇮🇳|🇲🇾|🇹🇭|🇻🇳|🇵🇭|🇮🇱|🇹🇷|🇦🇪|🇧🇷|🇲🇽|🇿🇦)";
 
   // OpenAI 核心、登录、静态资源和附件域名。不要把整个 googleapis.com 交给该组，
   // 其中很多是 Chromium 的推送/优化服务，与聊天主链路无关。
@@ -140,7 +215,7 @@ function main(config) {
     if (metadataNodePattern.test(name) || excludedNodePattern.test(name)) {
       return false;
     }
-    if (!overseasRegionPattern.test(name)) {
+    if (!gptSupportedRegionPattern.test(name)) {
       return false;
     }
     return isTcpFriendlyProxy(proxy);
@@ -216,7 +291,9 @@ function main(config) {
     }
 
     var candidates = getCandidateNodes();
-    var fallbackNodes = candidates.slice(0, 12);
+    var fallbackNodes = maxGptNodes > 0
+      ? candidates.slice(0, maxGptNodes)
+      : candidates.slice();
     var fallbackGroup = {
       name: fallbackGroupName,
       type: "fallback",
@@ -235,15 +312,14 @@ function main(config) {
     } else {
       // 没有可静态识别的节点时交给 Mihomo 动态筛选，避免脚本生成空组。
       fallbackGroup["include-all"] = true;
-      fallbackGroup.filter =
-        "(?i)(台湾|台灣|Taiwan|TW|日本|東京|东京|Japan|JP|韩国|韓國|Korea|KR|新加坡|Singapore|SG|美国|美國|United.?States|US|加拿大|Canada|CA|英国|英國|United.?Kingdom|UK|GB|德国|Germany|DE|法国|France|FR|荷兰|荷蘭|Netherlands|NL|澳大利亚|澳洲|Australia|AU|印度|India|IN)";
+      fallbackGroup.filter = gptRegionFilterPattern;
       fallbackGroup["exclude-filter"] =
-        "(?i)(香港|Hong.?Kong|HK|澳门|澳門|Macau|MO|中国|大陆|大陸|China|CN|剩余|剩餘|流量|套餐|到期|过期|過期|有效期|重置|expire|expired|traffic|quota|官网|官網|官方|订阅|訂閱|subscription|测试|測試|test|测速|測速|直连|直連)";
+        "(?i)(香港|Hong.?Kong|HK|🇭🇰|澳门|澳門|Macau|MO|🇲🇴|中国|大陆|大陸|China|CN|🇨🇳|俄罗斯|俄羅斯|Russia|RU|🇷🇺|白俄罗斯|Belarus|BY|剩余|剩餘|流量|套餐|到期|过期|過期|有效期|重置|expire|expired|traffic|quota|官网|官網|官方|订阅|訂閱|subscription|测试|測試|test|测速|測速|直连|直連)";
       fallbackGroup["exclude-type"] = "(?i)(Hysteria|Hysteria2|TUIC|WireGuard)";
     }
 
-    // ChatGPT 组默认固定到排序第一的节点，避免每次打开聊天都变更出口 IP。
-    // 需要自动恢复时手动选择 ChatGPT-故障转移；它只在连续 3 次健康检查失败后切换。
+    // 手动入口默认落到故障转移组；GPT/Codex 域名和进程规则也直接指向该组。
+    // fallback 只在连续 3 次健康检查失败后才切换，避免轻微抖动触发出口漂移。
     var selectable = [];
     if (candidates.length > 0) {
       selectable.push(candidates[0]);
@@ -435,14 +511,14 @@ function main(config) {
       managedExact[directExactDomains[directIndex].toLowerCase()] = true;
     }
     for (var appIndex = 0; appIndex < appProcessNames.length; appIndex++) {
-      addRule("PROCESS-NAME," + appProcessNames[appIndex] + "," + groupName);
+      addRule("PROCESS-NAME," + appProcessNames[appIndex] + "," + routeGroupName);
       managedProcesses[appProcessNames[appIndex].toLowerCase()] = true;
     }
     for (var suffixIndex = 0; suffixIndex < openAiSuffixes.length; suffixIndex++) {
-      addRule("DOMAIN-SUFFIX," + openAiSuffixes[suffixIndex] + "," + groupName);
+      addRule("DOMAIN-SUFFIX," + openAiSuffixes[suffixIndex] + "," + routeGroupName);
     }
     for (var exactIndex = 0; exactIndex < openAiExactDomains.length; exactIndex++) {
-      addRule("DOMAIN," + openAiExactDomains[exactIndex] + "," + groupName);
+      addRule("DOMAIN," + openAiExactDomains[exactIndex] + "," + routeGroupName);
     }
 
     var oldRules = Array.isArray(config.rules) ? config.rules : [];

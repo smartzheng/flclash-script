@@ -11,11 +11,10 @@ function main(config) {
   var groupName = "ChatGPT";
   var fallbackGroupName = "ChatGPT-故障转移";
   var routeGroupName = fallbackGroupName;
-  // 未携带 API Key 的 401 是预期结果，只用来确认 OpenAI 链路可达。
-  var healthCheckUrl = "https://api.openai.com/v1/models";
-  var healthCheckExpectedStatus = 401;
-  // 0 表示保留全部符合地区和传输条件的节点；如果订阅节点非常多，可改成 20/30。
-  var maxGptNodes = 0;
+  // 只探测 ChatGPT 前门链路；HTTP 探针不能验证 Codex 的 WebSocket 长连接。
+  var healthCheckUrl = "https://chatgpt.com/robots.txt";
+  var healthCheckExpectedStatus = 200;
+  var maxGptNodes = 12;
 
   // 公司内网必须直连，由 Windows/公司 DNS 解析。
   var directDomainSuffixes = ["xwfintech.com"];
@@ -151,12 +150,11 @@ function main(config) {
     var type = String((proxy && proxy.type) || "").toLowerCase();
     var network = String((proxy && proxy.network) || "").toLowerCase();
 
-    // ChatGPT/Codex 主要使用 HTTPS、SSE 和 WebSocket。排除容易出现 UDP/QUIC
-    // 握手不一致的节点，但保留 SS、VMess、VLESS、Trojan、SOCKS 等 TCP 节点。
-    if (/^(hysteria|hysteria2|tuic|wireguard)$/.test(type)) {
+    // HY2/TUIC 的底层使用 UDP，不妨碍承载 ChatGPT/Codex 的 TCP 连接。
+    if (type === "wireguard") {
       return false;
     }
-    if (/quic|http3/.test(network)) {
+    if (!/^(hysteria|hysteria2|tuic)$/.test(type) && /quic|http3/.test(network)) {
       return false;
     }
     return true;
@@ -164,7 +162,12 @@ function main(config) {
 
   function nodePriority(proxy, name) {
     var score = 1000;
+    var type = String((proxy && proxy.type) || "").toLowerCase();
     var network = String((proxy && proxy.network) || "").toLowerCase();
+
+    if (/^(hysteria|hysteria2|tuic)$/.test(type)) {
+      score += 80;
+    }
 
     if (proxy && (proxy["reality-opts"] || /vision/i.test(proxy.flow || ""))) {
       score -= 300;
@@ -247,24 +250,36 @@ function main(config) {
     return names;
   }
 
-  function optimizeExistingGroup(group) {
-    if (!group || typeof group.type !== "string") {
-      return;
+  function getFallbackNodes(candidates) {
+    var buckets = { jp: [], sg: [], twkr: [], us: [], other: [] };
+    var limits = { jp: 3, sg: 3, twkr: 2, us: 2, other: 2 };
+    var order = ["jp", "sg", "twkr", "us", "other"];
+    var selected = [];
+
+    for (var i = 0; i < candidates.length; i++) {
+      var name = candidates[i];
+      var bucket = "other";
+      if (/日本|東京|东京|Japan|\bJP\b|🇯🇵/i.test(name)) {
+        bucket = "jp";
+      } else if (/新加坡|Singapore|\bSG\b|🇸🇬/i.test(name)) {
+        bucket = "sg";
+      } else if (/台湾|台灣|Taiwan|\bTW\b|🇹🇼|韩国|韓國|South Korea|\bKR\b|🇰🇷/i.test(name)) {
+        bucket = "twkr";
+      } else if (/美国|美國|United.?States|\bUS\b|🇺🇸/i.test(name)) {
+        bucket = "us";
+      }
+      buckets[bucket].push(name);
     }
-    var type = group.type.toLowerCase();
-    if (type === "url-test") {
-      // 防止轻微延迟波动导致频繁换 IP；只在明显改善时才换节点。
-      group.interval = 900;
-      group.timeout = 8000;
-      group.lazy = true;
-      group.tolerance = 100;
-      group["max-failed-times"] = 3;
-    } else if (type === "fallback") {
-      group.interval = 900;
-      group.timeout = 8000;
-      group.lazy = true;
-      group["max-failed-times"] = 3;
+
+    for (var j = 0; j < order.length; j++) {
+      var region = order[j];
+      selected = selected.concat(buckets[region].slice(0, limits[region]));
     }
+    // 某地区没有节点时，按原优先级填满剩余名额。
+    for (var k = 0; k < candidates.length && selected.length < maxGptNodes; k++) {
+      pushUnique(selected, candidates[k]);
+    }
+    return selected.slice(0, maxGptNodes);
   }
 
   function buildProxyGroups() {
@@ -286,22 +301,19 @@ function main(config) {
         continue;
       }
       seenGroupNames[group.name] = true;
-      optimizeExistingGroup(group);
       newGroups.push(group);
     }
 
     var candidates = getCandidateNodes();
-    var fallbackNodes = maxGptNodes > 0
-      ? candidates.slice(0, maxGptNodes)
-      : candidates.slice();
+    var fallbackNodes = getFallbackNodes(candidates);
     var fallbackGroup = {
       name: fallbackGroupName,
       type: "fallback",
       url: healthCheckUrl,
-      interval: 900,
-      timeout: 8000,
-      lazy: true,
-      "max-failed-times": 3,
+      interval: 120,
+      timeout: 6000,
+      lazy: false,
+      "max-failed-times": 2,
       "expected-status": healthCheckExpectedStatus,
       "disable-udp": true,
       hidden: false
@@ -310,21 +322,18 @@ function main(config) {
     if (fallbackNodes.length > 0) {
       fallbackGroup.proxies = fallbackNodes;
     } else {
-      // 没有可静态识别的节点时交给 Mihomo 动态筛选，避免脚本生成空组。
+      // 仅使用 proxy-providers 时节点名尚未载入，只能由 Mihomo 动态筛选；
+      // 这种情况下无法在覆写脚本里限制为 12 个，需在 provider 自身过滤。
       fallbackGroup["include-all"] = true;
       fallbackGroup.filter = gptRegionFilterPattern;
       fallbackGroup["exclude-filter"] =
         "(?i)(香港|Hong.?Kong|HK|🇭🇰|澳门|澳門|Macau|MO|🇲🇴|中国|大陆|大陸|China|CN|🇨🇳|俄罗斯|俄羅斯|Russia|RU|🇷🇺|白俄罗斯|Belarus|BY|剩余|剩餘|流量|套餐|到期|过期|過期|有效期|重置|expire|expired|traffic|quota|官网|官網|官方|订阅|訂閱|subscription|测试|測試|test|测速|測速|直连|直連)";
-      fallbackGroup["exclude-type"] = "(?i)(Hysteria|Hysteria2|TUIC|WireGuard)";
+      fallbackGroup["exclude-type"] = "(?i)^WireGuard$";
     }
 
     // 手动入口默认落到故障转移组；GPT/Codex 域名和进程规则也直接指向该组。
-    // fallback 只在连续 3 次健康检查失败后才切换，避免轻微抖动触发出口漂移。
-    var selectable = [];
-    if (candidates.length > 0) {
-      selectable.push(candidates[0]);
-    }
-    selectable.push(fallbackGroupName);
+    // fallback 按配置顺序选择第一个健康节点，不按微小延迟差异切换。
+    var selectable = [fallbackGroupName];
     for (var j = 0; j < candidates.length; j++) {
       pushUnique(selectable, candidates[j]);
     }
@@ -344,14 +353,12 @@ function main(config) {
     // 保存用户手动选择，避免重启后回到另一出口。
     config.profile["store-selected"] = true;
 
-    // OpenAI 客户端的主链路是 TCP；统一关闭 IPv6 可避免 AAAA 解析到不可达地址。
-    config.ipv6 = false;
+    if (typeof config.ipv6 !== "boolean") {
+      config.ipv6 = false;
+    }
     config["tcp-concurrent"] = true;
     config["disable-keep-alive"] = false;
     config["keep-alive-interval"] = 30;
-    if (!config["global-client-fingerprint"]) {
-      config["global-client-fingerprint"] = "chrome";
-    }
 
     // 不主动开启 TUN。若用户已经开启 TUN，只补齐稳定所需的路由/DNS 劫持参数。
     config.tun = config.tun || {};
@@ -391,6 +398,9 @@ function main(config) {
       "https://1.1.1.1/dns-query",
       "https://8.8.8.8/dns-query"
     ];
+    var openAiDns = overseasDns.map(function (server) {
+      return server + "#" + fallbackGroupName;
+    });
     var openAiPolicies = [
       "+.openai.com",
       "+.chatgpt.com",
@@ -406,7 +416,9 @@ function main(config) {
     ];
 
     dns.enable = true;
-    dns.ipv6 = false;
+    if (typeof dns.ipv6 !== "boolean") {
+      dns.ipv6 = config.ipv6;
+    }
     dns["respect-rules"] = true;
     // respect-rules 与 DoH over HTTP/3 组合容易增加握手失败，保持 DoH over TCP/TLS。
     dns["prefer-h3"] = false;
@@ -448,7 +460,7 @@ function main(config) {
       dns["nameserver-policy"] = {};
     }
     for (var i = 0; i < openAiPolicies.length; i++) {
-      dns["nameserver-policy"][openAiPolicies[i]] = overseasDns.slice();
+      dns["nameserver-policy"][openAiPolicies[i]] = openAiDns.slice();
     }
     for (var directIndex = 0; directIndex < directDomainSuffixes.length; directIndex++) {
       dns["nameserver-policy"]["+." + directDomainSuffixes[directIndex]] = ["system"];

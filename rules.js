@@ -227,6 +227,52 @@ function main(config) {
   // 同地区连续排列，日本优先；其他地区在主地区不可用时作为备用。
   var regionOrder = ["jp", "sg", "tw", "kr", "us", "ca", "other"];
 
+  // 2026-10-17 实测出口；节点改名或服务商更换出口后需重新测量更新。
+  // 不用入口服务器地址猜测出口，也不把未测量的节点视为独立出口。
+  var measuredExitIps = {
+    "日本 A01 移动路由 高带宽优化": "23.249.16.35",
+    "日本 A11 移动路由 高带宽优化": "23.249.16.35",
+    "日本 A21 移动路由 高带宽优化": "23.249.16.35",
+    "日本 A02 移动路由 高带宽优化": "23.249.16.36",
+    "日本 A12 移动路由 高带宽优化": "23.249.16.36",
+    "日本 A22 移动路由 高带宽优化": "23.249.16.36",
+    "新加坡 A01 电信优化": "104.251.232.225",
+    "新加坡 A02 电信优化": "104.251.232.225"
+  };
+
+  function prioritizeDifferentExits(names) {
+    var exits = [];
+    var queues = [];
+    var unknown = [];
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i];
+      var ip = measuredExitIps[name];
+      if (!ip) {
+        unknown.push(name);
+        continue;
+      }
+      var index = exits.indexOf(ip);
+      if (index === -1) {
+        index = exits.length;
+        exits.push(ip);
+        queues.push([]);
+      }
+      queues[index].push(name);
+    }
+    var ordered = [];
+    for (var depth = 0; depth < names.length; depth++) {
+      var added = false;
+      for (var j = 0; j < queues.length; j++) {
+        if (depth < queues[j].length) {
+          ordered.push(queues[j][depth]);
+          added = true;
+        }
+      }
+      if (!added) break;
+    }
+    return ordered.concat(unknown);
+  }
+
   function nodeRegion(name) {
     if (/日本|東京|东京|Japan|\bJP\b|🇯🇵/i.test(name)) return "jp";
     if (/新加坡|Singapore|\bSG\b|🇸🇬/i.test(name)) return "sg";
@@ -279,6 +325,7 @@ function main(config) {
 
     for (var j = 0; j < order.length; j++) {
       var region = order[j];
+      buckets[region] = prioritizeDifferentExits(buckets[region]);
       selected = selected.concat(buckets[region].slice(0, limits[region]));
     }
     // 某地区没有节点时，按原优先级填满剩余名额。
@@ -286,8 +333,12 @@ function main(config) {
       pushUnique(selected, candidates[k]);
     }
     selected = selected.slice(0, maxGptNodes);
-    // 补位后恢复地区连续顺序，避免日本备用被追加到跨地区节点后面。
-    return candidates.filter(function (name) {
+    // 补位也沿用地区和出口轮换顺序，避免还原为原始订阅顺序。
+    var ordered = [];
+    for (var regionIndex = 0; regionIndex < order.length; regionIndex++) {
+      ordered = ordered.concat(buckets[order[regionIndex]]);
+    }
+    return ordered.filter(function (name) {
       return selected.indexOf(name) !== -1;
     });
   }

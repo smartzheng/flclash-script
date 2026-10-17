@@ -6,11 +6,11 @@
 function main(config) {
   config = config || {};
 
-  // ChatGPT 是手动选择入口；真正给 GPT/Codex 流量使用的是 fallback 组。
+  // GPT/Codex 流量和 DNS 都通过 ChatGPT 手动入口，默认使用 fallback 组。
   // 这样节点故障时会自动切换，健康时又不会因为 url-test 的小幅延迟波动频繁换出口。
   var groupName = "ChatGPT";
   var fallbackGroupName = "ChatGPT-故障转移";
-  var routeGroupName = fallbackGroupName;
+  var routeGroupName = groupName;
   // 只探测 ChatGPT 前门链路；HTTP 探针不能验证 Codex 的 WebSocket 长连接。
   var healthCheckUrl = "https://chatgpt.com/robots.txt";
   var healthCheckExpectedStatus = 200;
@@ -199,7 +199,7 @@ function main(config) {
       score -= 90;
     }
 
-    // 当前脚本关闭 IPv6，名称中明确标注 IPv6 的节点只作为后备。
+    // 当现有配置关闭 IPv6 时，名称中明确标注 IPv6 的节点只作为后备。
     if (/IPv6/i.test(name) && config.ipv6 === false) {
       score += 80;
     }
@@ -224,6 +224,19 @@ function main(config) {
     return isTcpFriendlyProxy(proxy);
   }
 
+  // 同地区连续排列，日本优先；其他地区在主地区不可用时作为备用。
+  var regionOrder = ["jp", "sg", "tw", "kr", "us", "ca", "other"];
+
+  function nodeRegion(name) {
+    if (/日本|東京|东京|Japan|\bJP\b|🇯🇵/i.test(name)) return "jp";
+    if (/新加坡|Singapore|\bSG\b|🇸🇬/i.test(name)) return "sg";
+    if (/台湾|台灣|Taiwan|\bTW\b|🇹🇼/i.test(name)) return "tw";
+    if (/韩国|韓國|South Korea|\bKR\b|🇰🇷/i.test(name)) return "kr";
+    if (/美国|美國|United.?States|\bUS\b|🇺🇸/i.test(name)) return "us";
+    if (/加拿大|Canada|\bCA\b|🇨🇦/i.test(name)) return "ca";
+    return "other";
+  }
+
   function getCandidateNodes() {
     var proxies = Array.isArray(config.proxies) ? config.proxies : [];
     var candidates = [];
@@ -240,7 +253,8 @@ function main(config) {
     }
 
     candidates.sort(function (a, b) {
-      return a.score - b.score || a.index - b.index;
+      return regionOrder.indexOf(nodeRegion(a.name)) - regionOrder.indexOf(nodeRegion(b.name)) ||
+        a.score - b.score || a.index - b.index;
     });
 
     var names = [];
@@ -251,23 +265,15 @@ function main(config) {
   }
 
   function getFallbackNodes(candidates) {
-    var buckets = { jp: [], sg: [], twkr: [], us: [], other: [] };
-    var limits = { jp: 3, sg: 3, twkr: 2, us: 2, other: 2 };
-    var order = ["jp", "sg", "twkr", "us", "other"];
+    var buckets = { jp: [], sg: [], tw: [], kr: [], us: [], ca: [], other: [] };
+    // 主地区保留更多候选，同时保留跨地区备用，总数仍不超过 12。
+    var limits = { jp: 6, sg: 2, tw: 1, kr: 1, us: 1, ca: 1, other: 2 };
+    var order = regionOrder;
     var selected = [];
 
     for (var i = 0; i < candidates.length; i++) {
       var name = candidates[i];
-      var bucket = "other";
-      if (/日本|東京|东京|Japan|\bJP\b|🇯🇵/i.test(name)) {
-        bucket = "jp";
-      } else if (/新加坡|Singapore|\bSG\b|🇸🇬/i.test(name)) {
-        bucket = "sg";
-      } else if (/台湾|台灣|Taiwan|\bTW\b|🇹🇼|韩国|韓國|South Korea|\bKR\b|🇰🇷/i.test(name)) {
-        bucket = "twkr";
-      } else if (/美国|美國|United.?States|\bUS\b|🇺🇸/i.test(name)) {
-        bucket = "us";
-      }
+      var bucket = nodeRegion(name);
       buckets[bucket].push(name);
     }
 
@@ -279,7 +285,11 @@ function main(config) {
     for (var k = 0; k < candidates.length && selected.length < maxGptNodes; k++) {
       pushUnique(selected, candidates[k]);
     }
-    return selected.slice(0, maxGptNodes);
+    selected = selected.slice(0, maxGptNodes);
+    // 补位后恢复地区连续顺序，避免日本备用被追加到跨地区节点后面。
+    return candidates.filter(function (name) {
+      return selected.indexOf(name) !== -1;
+    });
   }
 
   function buildProxyGroups() {
@@ -328,23 +338,32 @@ function main(config) {
       fallbackGroup.filter = gptRegionFilterPattern;
       fallbackGroup["exclude-filter"] =
         "(?i)(香港|Hong.?Kong|HK|🇭🇰|澳门|澳門|Macau|MO|🇲🇴|中国|大陆|大陸|China|CN|🇨🇳|俄罗斯|俄羅斯|Russia|RU|🇷🇺|白俄罗斯|Belarus|BY|剩余|剩餘|流量|套餐|到期|过期|過期|有效期|重置|expire|expired|traffic|quota|官网|官網|官方|订阅|訂閱|subscription|测试|測試|test|测速|測速|直连|直連)";
-      fallbackGroup["exclude-type"] = "(?i)^WireGuard$";
+      fallbackGroup["exclude-type"] = "WireGuard";
     }
 
-    // 手动入口默认落到故障转移组；GPT/Codex 域名和进程规则也直接指向该组。
+    // 手动入口默认落到故障转移组；手动固定节点时，流量和 DNS 同时跟随。
     // fallback 按配置顺序选择第一个健康节点，不按微小延迟差异切换。
     var selectable = [fallbackGroupName];
     for (var j = 0; j < candidates.length; j++) {
       pushUnique(selectable, candidates[j]);
     }
 
-    newGroups.push(fallbackGroup);
-    newGroups.push({
+    var selectGroup = {
       name: groupName,
       type: "select",
+      "default-selected": fallbackGroupName,
       "disable-udp": true,
       proxies: selectable
-    });
+    };
+    // provider 节点在脚本执行后载入时，手动组也提供同样筛选的节点。
+    if (candidates.length === 0) {
+      selectGroup["include-all"] = true;
+      selectGroup.filter = fallbackGroup.filter;
+      selectGroup["exclude-filter"] = fallbackGroup["exclude-filter"];
+      selectGroup["exclude-type"] = fallbackGroup["exclude-type"];
+    }
+    newGroups.push(fallbackGroup);
+    newGroups.push(selectGroup);
     config["proxy-groups"] = newGroups;
   }
 
@@ -399,21 +418,11 @@ function main(config) {
       "https://8.8.8.8/dns-query"
     ];
     var openAiDns = overseasDns.map(function (server) {
-      return server + "#" + fallbackGroupName;
+      return server + "#" + routeGroupName;
     });
-    var openAiPolicies = [
-      "+.openai.com",
-      "+.chatgpt.com",
-      "+.oaistatic.com",
-      "+.oaiusercontent.com",
-      "+.oaistatsig.com",
-      "+.workos.com",
-      "+.workoscdn.com",
-      "+.intercom.io",
-      "+.intercomcdn.com",
-      "challenges.cloudflare.com",
-      "client-api.arkoselabs.com"
-    ];
+    var openAiPolicies = openAiSuffixes.map(function (domain) {
+      return "+." + domain;
+    }).concat(openAiExactDomains);
 
     dns.enable = true;
     if (typeof dns.ipv6 !== "boolean") {

@@ -413,9 +413,7 @@ function main(config) {
       selectGroup["exclude-filter"] = fallbackGroup["exclude-filter"];
       selectGroup["exclude-type"] = fallbackGroup["exclude-type"];
     }
-    newGroups.push(fallbackGroup);
-    newGroups.push(selectGroup);
-    config["proxy-groups"] = newGroups;
+    config["proxy-groups"] = [fallbackGroup, selectGroup].concat(newGroups);
   }
 
   function optimizeRuntime() {

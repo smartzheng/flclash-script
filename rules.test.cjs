@@ -49,5 +49,6 @@ test('keeps countries together and respects the 12-node cap and existing groups'
   const out = run(nodes, { 'proxy-groups': [existing] });
   assert.equal(fallback(out).proxies.length, 12);
   assert.deepEqual(codes(fallback(out).proxies.slice(0, 6)), ['A01', 'A02', 'A11', 'A12', 'A21', 'A22']);
-  assert.deepEqual(out['proxy-groups'][0], existing);
+  assert.deepEqual(out['proxy-groups'].slice(0, 2).map(g => g.name), ['ChatGPT-故障转移', 'ChatGPT']);
+  assert.deepEqual(out['proxy-groups'][2], existing);
 });

@@ -40,14 +40,17 @@ test('retains unmeasured nodes without claiming their exits are different', () =
   assert.deepEqual(codes(fallback(run([jp('A31'), jp('A32')])).proxies), ['A31', 'A32']);
 });
 
-test('keeps countries together and respects the 12-node cap and existing groups', () => {
+test('includes every manual candidate in failover, preserving region order and existing groups', () => {
   const existing = { name: 'Other', type: 'url-test', interval: 600, proxies: ['DIRECT'] };
   const nodes = ['A01', 'A11', 'A21', 'A02', 'A12', 'A22'].map(c => jp(c));
   for (const name of ['新加坡 A01 电信优化', '新加坡 A02 电信优化', 'TW A01', 'KR A01', 'US A01', 'CA A01', 'DE A01']) {
     nodes.unshift({ name, type: 'trojan', port: 443 });
   }
   const out = run(nodes, { 'proxy-groups': [existing] });
-  assert.equal(fallback(out).proxies.length, 12);
+  const manual = out['proxy-groups'].find(g => g.name === 'ChatGPT');
+  assert.equal(fallback(out).proxies.length, 13);
+  assert.equal(manual.proxies[0], 'ChatGPT-故障转移');
+  assert.deepEqual(fallback(out).proxies.slice().sort(), manual.proxies.slice(1).sort());
   assert.deepEqual(codes(fallback(out).proxies.slice(0, 6)), ['A01', 'A02', 'A11', 'A12', 'A21', 'A22']);
   assert.deepEqual(out['proxy-groups'].slice(0, 2).map(g => g.name), ['ChatGPT-故障转移', 'ChatGPT']);
   assert.deepEqual(out['proxy-groups'][2], existing);

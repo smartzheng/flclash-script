@@ -14,7 +14,6 @@ function main(config) {
   // 只探测 ChatGPT 前门链路；HTTP 探针不能验证 Codex 的 WebSocket 长连接。
   var healthCheckUrl = "https://chatgpt.com/robots.txt";
   var healthCheckExpectedStatus = 200;
-  var maxGptNodes = 12;
 
   // 公司内网必须直连，由 Windows/公司 DNS 解析。
   var directDomainSuffixes = ["xwfintech.com"];
@@ -312,10 +311,6 @@ function main(config) {
 
   function getFallbackNodes(candidates) {
     var buckets = { jp: [], sg: [], tw: [], kr: [], us: [], ca: [], other: [] };
-    // 主地区保留更多候选，同时保留跨地区备用，总数仍不超过 12。
-    var limits = { jp: 6, sg: 2, tw: 1, kr: 1, us: 1, ca: 1, other: 2 };
-    var order = regionOrder;
-    var selected = [];
 
     for (var i = 0; i < candidates.length; i++) {
       var name = candidates[i];
@@ -323,24 +318,11 @@ function main(config) {
       buckets[bucket].push(name);
     }
 
-    for (var j = 0; j < order.length; j++) {
-      var region = order[j];
-      buckets[region] = prioritizeDifferentExits(buckets[region]);
-      selected = selected.concat(buckets[region].slice(0, limits[region]));
-    }
-    // 某地区没有节点时，按原优先级填满剩余名额。
-    for (var k = 0; k < candidates.length && selected.length < maxGptNodes; k++) {
-      pushUnique(selected, candidates[k]);
-    }
-    selected = selected.slice(0, maxGptNodes);
-    // 补位也沿用地区和出口轮换顺序，避免还原为原始订阅顺序。
     var ordered = [];
-    for (var regionIndex = 0; regionIndex < order.length; regionIndex++) {
-      ordered = ordered.concat(buckets[order[regionIndex]]);
+    for (var j = 0; j < regionOrder.length; j++) {
+      ordered = ordered.concat(prioritizeDifferentExits(buckets[regionOrder[j]]));
     }
-    return ordered.filter(function (name) {
-      return selected.indexOf(name) !== -1;
-    });
+    return ordered;
   }
 
   function buildProxyGroups() {
@@ -383,8 +365,7 @@ function main(config) {
     if (fallbackNodes.length > 0) {
       fallbackGroup.proxies = fallbackNodes;
     } else {
-      // 仅使用 proxy-providers 时节点名尚未载入，只能由 Mihomo 动态筛选；
-      // 这种情况下无法在覆写脚本里限制为 12 个，需在 provider 自身过滤。
+      // provider 节点尚未载入时，由 Mihomo 动态筛选，脚本无法按出口排序。
       fallbackGroup["include-all"] = true;
       fallbackGroup.filter = gptRegionFilterPattern;
       fallbackGroup["exclude-filter"] =
